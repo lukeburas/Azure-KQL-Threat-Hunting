@@ -1,0 +1,39 @@
+// Part 2: KQL basics and troubleshooting
+// Source: starting queries provided with the lab environment. Changes by me are marked "// changed:"
+
+// BASIC PATTERN: table, filter rows, pick columns
+DeviceLogonEvents
+| where TimeGenerated between (todatetime("Jun 10, 2026 1:43:05 PM") .. todatetime("Jun 12, 2026 9:42:30 AM"))
+
+// FAILED-LOGIN HUNT: stacking filters one pipe at a time
+SigninLogs
+| where TimeGenerated > ago(7d)
+| where isnotempty(ResultDescription)
+| where IPAddress startswith "1"
+| project TimeGenerated,
+          ResultDescription,
+          UserPrincipalName,
+          IPAddress,
+          Location
+
+// TROUBLESHOOTING: successful sign-ins from Osaka, Japan
+
+// BROKEN: returns 0 rows
+SigninLogs
+| where TimeGenerated > ago(30d)
+| where ResultSignature == "SUCCESS"
+| where LocationDetails.city == "Osaka"
+| where LocationDetails.countryOrRegion == "Japan"   // the column stores "JP"
+| project-reorder TimeGenerated, UserPrincipalName
+
+// CHECK FIRST: see what values a column actually holds before filtering on it
+SigninLogs
+| distinct Location
+
+// FIXED: country code instead of country name, wider time window
+SigninLogs
+| where TimeGenerated > ago(365d)
+| where ResultSignature == "SUCCESS"
+| where LocationDetails.city == "Osaka"
+| where LocationDetails.countryOrRegion == "JP"
+| project-reorder TimeGenerated, UserPrincipalName

@@ -1,0 +1,66 @@
+// Part 6: DeviceProcessEvents hunting (process creation via Defender for Endpoint)
+// Table reference: https://learn.microsoft.com/en-us/defender-xdr/advanced-hunting-deviceprocessevents-table
+// Source: starting queries provided with the lab environment. Changes by me are marked "// changed:"
+
+// Set the investigation window once at the top, reuse it everywhere.
+// If these dates come back empty, swap in a recent range.
+let startTime = datetime(2026-06-02 00:00:00);
+let endTime = datetime(2026-06-03 00:00:00);
+
+
+// USE CASE 1: Suspicious PowerShell command lines
+// Encoded, hidden, or download-style PowerShell is common in fileless attacks.
+// Expect noise from "bypass" since -ExecutionPolicy Bypass is common in admin scripts.
+// ATT&CK T1059.001 PowerShell, T1027 Obfuscated Files or Information | NIST CSF 2.0 DE.CM-09
+DeviceProcessEvents
+| where TimeGenerated between (startTime .. endTime)
+| where FileName =~ "powershell.exe" or FileName =~ "pwsh.exe"
+| where ProcessCommandLine has_any (
+    "-enc", "-encodedcommand", "-e ",
+    "downloadstring", "downloadfile", "iex", "invoke-expression",
+    "-windowstyle hidden", "-w hidden", "frombase64string", "bypass")
+| project Timestamp, DeviceName, AccountName, FileName, InitiatingProcessFileName, ProcessCommandLine
+| sort by Timestamp desc
+
+
+// USE CASE 2: Office / browser apps spawning shells (macro malware)
+// A parent like winword/excel/outlook/chrome launching a shell or script host
+// is a classic phishing payload pattern.
+// ATT&CK T1204.002 Malicious File, T1566.001 Spearphishing Attachment | NIST CSF 2.0 DE.CM-09
+DeviceProcessEvents
+| where TimeGenerated between (startTime .. endTime)
+| where InitiatingProcessFileName in~ (
+    "winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe",
+    "chrome.exe", "msedge.exe", "firefox.exe")
+| where FileName in~ (
+    "cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe",
+    "cscript.exe", "mshta.exe", "rundll32.exe", "regsvr32.exe")
+| project Timestamp, DeviceName, AccountName, InitiatingProcessFileName, FileName, ProcessCommandLine
+| sort by Timestamp desc
+
+
+// USE CASE 3: Processes running from unusual locations
+// Legit system binaries live in System32 / Program Files. Execution from
+// temp, downloads, or appdata is worth a closer look (needs an allowlist).
+// ATT&CK T1204.002 Malicious File, T1105 Ingress Tool Transfer | NIST CSF 2.0 DE.CM-09
+DeviceProcessEvents
+| where TimeGenerated between (startTime .. endTime)
+| where FolderPath has_any (
+    @"\temp\", @"\appdata\", @"\downloads\",
+    @"\users\public\", @"\programdata\", @"\windows\temp\")
+| where FileName endswith ".exe"
+| summarize Count = count(), Cmds = make_set(ProcessCommandLine, 10)
+    by DeviceName, FileName, FolderPath
+| sort by Count desc
+
+
+// USE CASE 4: Living off the land binaries (LOLBins)
+// Seeing them is normal. Seeing them with odd command lines is the signal.
+// ATT&CK T1218 System Binary Proxy Execution, T1105 Ingress Tool Transfer, T1047 WMI | NIST CSF 2.0 DE.CM-09
+DeviceProcessEvents
+| where TimeGenerated between (startTime .. endTime)
+| where FileName in~ (
+    "certutil.exe", "bitsadmin.exe", "mshta.exe", "regsvr32.exe",
+    "rundll32.exe", "wmic.exe", "msbuild.exe", "installutil.exe")
+| project Timestamp, DeviceName, AccountName, FileName, ProcessCommandLine, InitiatingProcessFileName
+| sort by Timestamp desc

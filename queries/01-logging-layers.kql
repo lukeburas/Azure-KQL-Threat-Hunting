@@ -1,0 +1,36 @@
+// Part 1: Azure logging layers
+// One query per layer so the difference shows up in real data.
+// Source: starting queries provided with the lab environment. Changes by me are marked "// changed:"
+
+// TENANT LAYER (Entra ID logs): sign-ins for one user, location pulled out of the LocationDetails JSON
+SigninLogs
+| where UserPrincipalName contains "<username>"   // changed: replaced the lab's example username with a placeholder
+| project TimeGenerated,
+          UserPrincipalName,
+          UserDisplayName,
+          City = LocationDetails.city,
+          Country = LocationDetails.countryOrRegion
+
+// SUBSCRIPTION LAYER (Activity log): successful VM start actions
+AzureActivity
+| where OperationNameValue == "MICROSOFT.COMPUTE/VIRTUALMACHINES/START/ACTION"
+| where ActivityStatusValue == "Success"
+| project TimeGenerated,
+          OperationNameValue,
+          Caller,
+          CallerIpAddress,
+          ActivityStatusValue
+
+// RESOURCE LAYER (inside the VM, via Defender for Endpoint): failed logons
+DeviceLogonEvents
+| where ActionType == "LogonFailed"
+| project TimeGenerated,
+          DeviceName,
+          AccountName,
+          RemoteIP,
+          ActionType
+
+// SAME QUERY, TWO PORTALS: run this in the Defender portal and in Log Analytics and compare
+// Swap in a TimeGenerated value from your own results
+DeviceLogonEvents
+| where TimeGenerated == todatetime('2026-06-04T05:42:18.38219Z')

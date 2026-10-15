@@ -1,0 +1,85 @@
+// Part 4: NSG flow log hunting (NTANetAnalytics, processed by Traffic Analytics)
+// Schema: https://learn.microsoft.com/en-us/azure/azure-monitor/reference/tables/ntanetanalytics
+// Source: use cases 1-3 are starting queries provided with the lab environment.
+//         Use cases 4-5 were AI-generated and also provided with the lab.
+// Changes by me are marked "// changed:"
+
+// Set the investigation window once at the top, reuse it everywhere.
+// If these dates come back empty, swap in a recent range.
+let startTime = datetime(2026-06-02 00:00:00);
+let endTime = datetime(2026-06-03 00:00:00);
+
+
+// USE CASE 1: Port scan (one source hitting many ports)
+// ATT&CK T1595 Active Scanning (external source) / T1046 Network Service Discovery (internal source) | NIST CSF 2.0 DE.CM-01
+NTANetAnalytics
+| where TimeGenerated between (startTime .. endTime)
+| where FlowStatus == "Allowed"
+| where isnotempty(SrcIp)
+| summarize DistinctPorts = dcount(DestPort), Ports = make_set(DestPort, 50) by SrcIp, DestIp, AclRule
+| where DistinctPorts > 50
+| sort by DistinctPorts desc
+
+
+// USE CASE 2: Traffic allowed by overly permissive NSG rules
+// Matches on the rule NAME only. A badly named wide-open rule won't show up here.
+// ATT&CK N/A (exposure check) | NIST CSF 2.0 PR.IR-01, DE.CM-01
+NTANetAnalytics
+| where TimeGenerated between (startTime .. endTime)
+| where FlowStatus == "Allowed"
+| where AclRule has_any ("allow_all", "danger", "any")
+| summarize FlowCount = count(), Sources = dcount(SrcIp), Dests = dcount(DestIp) by AclRule
+| sort by FlowCount desc
+
+
+// USE CASE 3: Denied inbound flows (blocked attempts worth reviewing)
+// Renaming SrcIp to IpAddress lets Defender recognize it as an IP and enrich it
+// ATT&CK T1595 Active Scanning | NIST CSF 2.0 DE.CM-01
+NTANetAnalytics
+| where TimeGenerated between (startTime .. endTime)
+| where isnotempty(SrcIp)
+| where FlowDirection == "Inbound"
+| where DeniedInFlows > 0
+| summarize TotalDenied = sum(DeniedInFlows) by IpAddress = SrcIp, DestIp, DestPort, L4Protocol
+| sort by TotalDenied desc
+
+
+// USE CASE 4: Beaconing (AI-GENERATED, provided with the lab)
+// Before trusting a hit: compare AvgGap to the Traffic Analytics processing interval (60 or 10 min).
+// A long-lived normal connection can look perfectly regular because the table is already aggregated.
+// ATT&CK T1071 Application Layer Protocol | NIST CSF 2.0 DE.CM-01
+NTANetAnalytics
+| where TimeGenerated between (startTime .. endTime)
+| where FlowDirection == "Outbound"                // victim calling out to C2
+| where isnotempty(SrcIp) and isnotempty(DestIp)
+// Sort so flows for the same connection sit next to each other in time order
+| order by SrcIp asc, DestIp asc, DestPort asc, TimeGenerated asc
+| serialize                                          // lock in row order so prev() is meaningful
+| extend Key = strcat(SrcIp, "_", DestIp, "_", DestPort)
+// Seconds since the previous flow, only within the same connection
+| extend GapSeconds = iff(Key == prev(Key), datetime_diff('second', TimeGenerated, prev(TimeGenerated)), long(null))
+| where isnotnull(GapSeconds)
+| summarize Beacons = count(), AvgGap = avg(GapSeconds), StdevGap = stdev(GapSeconds) by SrcIp, DestIp, DestPort
+| where Beacons >= 5                                 // need enough callbacks to see a pattern
+| extend Regularity = StdevGap / AvgGap              // coefficient of variation: lower = more robotic
+| where Regularity < 0.2                             // tune this; < 0.2 is very regular
+| sort by Regularity asc
+
+
+// USE CASE 5: Data exfiltration (AI-GENERATED, provided with the lab)
+// ATT&CK T1041 Exfiltration Over C2 Channel, T1048 Exfiltration Over Alternative Protocol | NIST CSF 2.0 DE.CM-01
+NTANetAnalytics
+| where TimeGenerated between (startTime .. endTime)
+| where FlowDirection == "Outbound"                 // data leaving the network
+| where FlowStatus == "Allowed"                      // it actually got out
+| where isnotempty(DestPublicIps)                    // destination is on the internet
+| summarize
+    TotalBytesOut = sum(BytesSrcToDest),
+    TotalBytesIn  = sum(BytesDestToSrc),
+    FlowCount     = count(),
+    Ports         = make_set(DestPort, 20)
+    by SrcIp, DestIp, DestPublicIps
+| extend TotalMBOut = round(TotalBytesOut / 1024.0 / 1024.0, 2)
+| extend OutInRatio = todouble(TotalBytesOut) / (TotalBytesIn + 1)   // +1 avoids divide by zero
+| where TotalMBOut > 100                             // tune: only flag transfers above 100 MB
+| sort by TotalBytesOut desc

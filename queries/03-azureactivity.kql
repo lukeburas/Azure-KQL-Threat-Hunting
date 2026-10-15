@@ -1,0 +1,32 @@
+// Part 3: AzureActivity hunting (subscription Activity log, management plane)
+// Schema: https://learn.microsoft.com/en-us/azure/azure-monitor/reference/tables/azureactivity
+// Source: starting queries provided with the lab environment. Changes by me are marked "// changed:"
+
+// USE CASE 1: VM deletions
+// ATT&CK T1578.003 Delete Cloud Instance | NIST CSF 2.0 DE.CM-03
+AzureActivity
+| where TimeGenerated > ago(24h)
+| where OperationNameValue =~ "Microsoft.Compute/virtualMachines/delete"
+| where ActivityStatusValue == "Success"
+| project TimeGenerated, Caller, CallerIpAddress, OperationNameValue, ResourceGroup, _ResourceId
+| sort by TimeGenerated desc
+
+// USE CASE 2: VM creations
+// Note: virtualMachines/write covers both create AND update, so check the resource
+// ATT&CK T1578.002 Create Cloud Instance, T1496 Resource Hijacking | NIST CSF 2.0 DE.CM-03
+AzureActivity
+| where TimeGenerated > ago(24h)
+| where OperationNameValue =~ "Microsoft.Compute/virtualMachines/write"
+| where ActivityStatusValue == "Success"
+| project TimeGenerated, Caller, CallerIpAddress, OperationNameValue, ResourceGroup, _ResourceId
+| sort by TimeGenerated desc
+
+// USE CASE 3: NSG rule changes (any create, update, or delete)
+// No status filter, so failed attempts show up too
+// ATT&CK T1562.007 Disable or Modify Cloud Firewall | NIST CSF 2.0 DE.CM-03
+AzureActivity
+| where TimeGenerated > ago(48h)
+| where OperationNameValue has "networkSecurityGroups" or OperationNameValue has "securityRules"
+| where OperationNameValue endswith "write" or OperationNameValue endswith "delete"
+| project TimeGenerated, Caller, CallerIpAddress, OperationNameValue, ActivityStatusValue, ResourceGroup, _ResourceId
+| sort by TimeGenerated desc
