@@ -1,4 +1,4 @@
-# Azure Logging & KQL Threat Hunting
+# Azure Logging & KQL Threat Hunting Project
 
 Hunting through Azure control plane logs and NSG flow logs with KQL in a hosted Azure cyber range lab. Every use case is mapped to MITRE ATT&CK and NIST CSF 2.0.
 
